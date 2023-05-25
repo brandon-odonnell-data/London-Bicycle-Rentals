@@ -1,0 +1,177 @@
+-- What is the first rental start date and last rental end date?
+-- ie. What span of time does the database cover? 
+SELECT
+  MIN(start_date) AS first_entry_date,
+  MAX(end_date) AS last_entry_date
+FROM
+  bigquery-public-data.london_bicycles.cycle_hire;
+
+-- How has the number of rentals changed over time?
+WITH rentals_per_year AS (
+  SELECT
+    EXTRACT(year FROM start_date) AS rental_year,
+    COUNT(rental_id) AS num_times_rented
+  FROM
+    bigquery-public-data.london_bicycles.cycle_hire
+  GROUP BY 
+    rental_year
+),
+
+lag_times_rented AS (
+  SELECT
+    rental_year,
+    num_times_rented,
+    LAG(num_times_rented) OVER ( ORDER BY rental_year ) AS num_times_rented_last,
+  FROM
+    rentals_per_year
+  ORDER BY 
+    rental_year
+)
+
+SELECT
+  rental_year,
+  num_times_rented,
+  ROUND((num_times_rented - num_times_rented_last) / num_times_rented * 100,2) AS perc_change_rentals
+FROM 
+  lag_times_rented;
+
+-- What is the longest, shortest and average rental duration?
+SELECT
+  -- Convert to minutes
+  ROUND(MAX(duration)/60,0) AS max_duration_min,
+  ROUND(MIN(duration)/60,0) AS min_duration_min,
+  ROUND(AVG(duration)/60,0) AS avg_duration_min
+FROM 
+  bigquery-public-data.london_bicycles.cycle_hire
+-- Negative durations omitted, durations greater than 1 min
+WHERE 
+  duration >= 60;
+
+-- How many different bikes and bike models have been in use over the full period?
+SELECT
+  COUNT (DISTINCT bike_id) AS bikes_used,
+  COUNT (DISTINCT bike_model) AS models_used
+FROM
+  bigquery-public-data.london_bicycles.cycle_hire;
+
+-- How many times has each bike been rented? 
+-- Can the highest number of rentals be attributed to older bikes?
+-- ie. Are many bikes being used more/less than expected? 
+SELECT
+  bike_id,
+  COUNT(rental_id) AS num_times_rented,
+  MIN(start_date) AS first_entry_date,
+  MAX(end_date) AS last_entry_date,
+  EXTRACT(year FROM MAX(end_date)) - EXTRACT(year FROM MIN(start_date)) AS years_used
+FROM
+  bigquery-public-data.london_bicycles.cycle_hire
+GROUP BY 
+  bike_id
+ORDER BY
+  num_times_rented DESC -- Change DESC to view upper and lower counts of rentals
+LIMIT
+  100;
+
+-- What are the most popular starting stations?
+SELECT
+  RANK () OVER (ORDER BY COUNT (rental_id) DESC) AS rank,
+  start_station_name,
+  COUNT (rental_id) AS num_rentals,
+FROM
+  bigquery-public-data.london_bicycles.cycle_hire
+GROUP BY 
+  start_station_name
+ORDER BY
+  num_rentals DESC
+LIMIT
+  10;
+
+-- Are there any increasing or decreasing trends for use of the top starting station?
+WITH top_start_station AS (
+  SELECT
+    start_station_name,
+    COUNT(*) AS num_rentals_total
+  FROM 
+    bigquery-public-data.london_bicycles.cycle_hire
+  GROUP BY 
+    start_station_name
+  ORDER BY 
+    num_rentals_total DESC
+  LIMIT 
+    1
+),
+
+rentals_by_year AS (
+  SELECT
+    start_station_name,
+    EXTRACT(year FROM start_date) AS rental_year,
+    COUNT(*) AS num_rentals
+  FROM 
+    bigquery-public-data.london_bicycles.cycle_hire
+  WHERE 
+    start_station_name IN (SELECT start_station_name FROM top_start_station)
+  GROUP BY 
+    start_station_name, rental_year
+)
+
+SELECT
+  start_station_name,
+  rental_year,
+  num_rentals,
+  ROUND((num_rentals - LAG(num_rentals) OVER (PARTITION BY start_station_name ORDER BY rental_year)) / LAG(num_rentals) OVER (PARTITION BY start_station_name ORDER BY rental_year) * 100,2) AS perc_change_year_on_year
+FROM 
+  rentals_by_year
+ORDER BY
+  rental_year;
+
+-- What are the most popular finishing stations?
+SELECT
+  RANK () OVER (ORDER BY COUNT (rental_id) DESC) AS rank,
+  end_station_name,
+  COUNT (rental_id) AS num_rentals,
+FROM
+  bigquery-public-data.london_bicycles.cycle_hire
+GROUP BY 
+  end_station_name
+ORDER BY 
+  num_rentals DESC
+LIMIT
+  10;
+
+-- How many journeys start and finish at the same location?
+WITH start_is_end AS (
+  SELECT
+    ch1.rental_id,
+    ch1.start_station_name,
+    ch1.end_station_name
+  FROM
+    bigquery-public-data.london_bicycles.cycle_hire AS ch1
+  INNER JOIN
+    bigquery-public-data.london_bicycles.cycle_hire AS ch2
+  ON
+    ch1.rental_id = ch2.rental_id
+  AND
+    ch1.start_station_name = ch2.end_station_name
+)
+
+SELECT
+  COUNT(rental_id) AS num_start_is_end,
+  (SELECT COUNT(rental_id) FROM bigquery-public-data.london_bicycles.cycle_hire) AS num_total_rentals,
+  ROUND(COUNT(rental_id) / (SELECT COUNT(rental_id) FROM bigquery-public-data.london_bicycles.cycle_hire) * 100,0) AS perc_all_rentals
+FROM
+  start_is_end;
+
+-- What are the geolocations (latitude, longitude) of each station?
+SELECT
+  DISTINCT(cs.name),
+  cs.latitude,
+  cs.longitude
+FROM
+  bigquery-public-data.london_bicycles.cycle_stations AS cs
+JOIN
+  bigquery-public-data.london_bicycles.cycle_hire AS ch
+ON
+  cs.name = ch.start_station_name
+ORDER BY 
+  cs.latitude;
+
